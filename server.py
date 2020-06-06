@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 import argparse
 import os
 import random
@@ -10,11 +11,14 @@ import json
 
 import re 
 
+import threading
+
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from contextlib import closing
 
 playlists : dict = None 
 load_balancing = {}
+cache = {}
 
 base_url_regex = '^http.?:\/\/.+.\..+?(\/.+)'
 
@@ -31,13 +35,14 @@ class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
         self.do_GET(body=False)
 
     def do_GET(self, body=True):
+        print("Request")
         sent = False
         try:
             req_header : dict = self.parse_headers()
 
             # print(req_header)
             # print(url)
-
+            user = None 
             parse = urlparse(self.path)
 
             query = parse_qs( parse.query  )
@@ -80,36 +85,51 @@ class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
                 url = provider['stream_host']
 
                 # TODO: Restream
+                if url + self.path in cache.keys():
+                    cache_pointer = cache[url + self.path]
+                    old_chunk = None
+                    while ( old_chunk != None ):
+                        if cache_pointer != old_chunk:
+                            old_chunk = cache_pointer
+                            self.wfile.write(old_chunk)
 
                 # TODO: Make threshold configurable
-                user_list =  list(filter(lambda x : "used" not in x.keys() or x["used"] < 1, provider['users']))
+                user_list =  list(filter(lambda x : "used" not in x.keys() or x["used"] < x["max_conn"], provider['users']))
 
                 if ( len(user_list) == 0 ): 
                     self.send_error(404, "Out of connections! \n")
                     return
 
                 user = user_list[0]
-                user["used"] = 1
+                user["used"] = user["used"] + 1 if "used" in user.keys() else 1 
 
                 resp = requests.get(url + self.path , headers=merge_two_dicts(req_header, {"Host" : urlparse(url).netloc } ), params=user['params'] , verify=False,  stream=True)
 
                 self.send_response(resp.status_code)
                 self.send_resp_headers(resp)
+
                 if body:
-                    for chunk in resp.iter_content(4096):
+                    for chunk in resp.iter_content(65536):
                         self.wfile.write(chunk)
+                        cache[url + self.path] = chunk 
+                    cache[url + self.path] = None
+                        
+                user["used"] -= 1
                 sent = True    
                 return
 
             else:
                 self.wfile.write('Use query params \n'.encode())
                 self.send_response(200)
+                return
 
         except Exception as e:
             print(e)
         finally:
             # self.finish()
             if not sent:
+                if user != None:
+                    user["used"] -= 1
                 self.send_error(404, 'error trying to proxy')
 
     def do_POST(self, body=True):
@@ -152,6 +172,8 @@ class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
         
         self.end_headers()
 
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread."""
 
 
 def parse_args(argv=sys.argv[1:]):

@@ -86,11 +86,10 @@ class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
 
                 # TODO: Restream
                 if url + self.path in cache.keys():
-                    cache_pointer = cache[url + self.path]
-                    old_chunk = None
+                    old_chunk = ''
                     while ( old_chunk != None ):
-                        if cache_pointer != old_chunk:
-                            old_chunk = cache_pointer
+                        if cache[url + self.path] != old_chunk:
+                            old_chunk = cache[url + self.path]
                             self.wfile.write(old_chunk)
 
                 # TODO: Make threshold configurable
@@ -191,7 +190,7 @@ def main(argv=sys.argv[1:]):
 
     print('http server is starting on port {}...'.format(args.port))
     server_address = ('0.0.0.0', args.port)
-    httpd = HTTPServer(server_address, ProxyHTTPRequestHandler)
+    httpd = ThreadedHTTPServer(server_address, ProxyHTTPRequestHandler)
     print('http server is running as reverse proxy')
     httpd.serve_forever()
 

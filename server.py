@@ -9,6 +9,9 @@ import sys
 import requests
 import json 
 
+from time import sleep
+from multiprocessing import Queue
+
 import re 
 
 import threading
@@ -18,7 +21,9 @@ from contextlib import closing
 
 playlists : dict = None 
 load_balancing = {}
+
 cache = {}
+response_cache = {}
 
 base_url_regex = '^http.?:\/\/.+.\..+?(\/.+)'
 
@@ -35,7 +40,6 @@ class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
         self.do_GET(body=False)
 
     def do_GET(self, body=True):
-        print("Request")
         sent = False
         try:
             req_header : dict = self.parse_headers()
@@ -86,11 +90,14 @@ class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
 
                 # TODO: Restream
                 if url + self.path in cache.keys():
-                    old_chunk = ''
-                    while ( old_chunk != None ):
-                        if cache[url + self.path] != old_chunk:
-                            old_chunk = cache[url + self.path]
-                            self.wfile.write(old_chunk)
+                    # Register and subscribe 
+
+                    self.send_response(response_cache[url + self.path]['status'])
+                    self.send_resp_headers(response_cache[url + self.path]['headers'])
+
+                    cache[url + self.path].append(self.wfile)
+                    while cache[url + self.path] != None:
+                        sleep(0.1)
 
                 # TODO: Make threshold configurable
                 user_list =  list(filter(lambda x : "used" not in x.keys() or x["used"] < x["max_conn"], provider['users']))
@@ -107,11 +114,22 @@ class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_response(resp.status_code)
                 self.send_resp_headers(resp)
 
+                response_cache[url + self.path] = {}
+                response_cache[url + self.path]['status'] = resp.status_code
+                response_cache[url + self.path]['headers'] = resp 
+
                 if body:
+                    cache[url + self.path] = [] 
                     for chunk in resp.iter_content(65536):
                         self.wfile.write(chunk)
-                        cache[url + self.path] = chunk 
-                    cache[url + self.path] = None
+                        
+                        for wf in cache[url + self.path] : 
+                            try: 
+                                wf.write(chunk)
+                            except Exception as e:
+                                pass 
+
+                    cache[url + self.path] = []
                         
                 user["used"] -= 1
                 sent = True    
